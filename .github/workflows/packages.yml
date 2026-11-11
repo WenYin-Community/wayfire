@@ -296,7 +296,6 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-          if-no-files-found: error
 
       - name: Upload packages to GitHub release
         env:
@@ -313,7 +312,9 @@ jobs:
               --title "Wayfire $GITHUB_REF_NAME" \
               --generate-notes $EXTRA
           fi
-          gh release upload "$GITHUB_REF_NAME" dist/* \
-            --repo "$GITHUB_REPOSITORY" --clobber
+          test -n "$(find dist -type f \( -name '*.deb' -o -name '*.rpm' \) -print -quit)"
+          find dist -type f \( -name '*.deb' -o -name '*.rpm' \) -print0 \
+            | xargs -0 gh release upload "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" --clobber
           gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
             --json url,assets --jq '{url, assets: [.assets[].name]}'
