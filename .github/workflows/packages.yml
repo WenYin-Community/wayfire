@@ -1,0 +1,284 @@
+name: Packages
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deb:
+    name: Debian package
+    runs-on: ubuntu-latest
+    container: debian:testing
+    steps:
+      - name: Install build dependencies
+        run: |
+          set -eux
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential meson ninja-build pkg-config git ca-certificates \
+            wayland-protocols libwayland-dev libwayland-bin \
+            libcairo2-dev libpango1.0-dev libfreetype-dev libglm-dev \
+            libdrm-dev libevdev-dev libgl-dev libgles-dev libegl-dev libgbm-dev \
+            libinput-dev libjpeg-dev libpng-dev libxkbcommon-dev libxml2-dev \
+            libpixman-1-dev libudev-dev libseat-dev libdisplay-info-dev hwdata \
+            libxcb1-dev libxcb-composite0-dev libxcb-ewmh-dev libxcb-icccm4-dev \
+            libxcb-render0-dev libxcb-res0-dev libxcb-xfixes0-dev libxcb-xinput-dev \
+            libxcb-errors-dev libx11-xcb-dev xwayland \
+            libliftoff-dev liblcms2-dev libyyjson-dev \
+            gettext
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Initialize submodules
+        run: |
+          set -eux
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git submodule sync --recursive
+          git submodule update --init --force \
+            subprojects/wlroots subprojects/wf-config subprojects/wf-utils \
+            subprojects/wf-touch subprojects/wf-json
+
+      - name: Build bundled dependencies
+        run: |
+          set -eux
+          meson setup build/wlroots subprojects/wlroots \
+            --prefix=/usr --buildtype=release -Dstrip=true \
+            -Dwerror=false -Dexamples=false -Dxwayland=enabled
+          ninja -C build/wlroots
+          meson install -C build/wlroots
+          DESTDIR="$PWD/stage" meson install -C build/wlroots
+
+          meson setup build/wf-config subprojects/wf-config \
+            --prefix=/usr --buildtype=release -Dstrip=true -Dtests=disabled
+          ninja -C build/wf-config
+          meson install -C build/wf-config
+          DESTDIR="$PWD/stage" meson install -C build/wf-config
+
+          meson setup build/wf-utils subprojects/wf-utils \
+            --prefix=/usr --buildtype=release -Dstrip=true
+          ninja -C build/wf-utils
+          meson install -C build/wf-utils
+          DESTDIR="$PWD/stage" meson install -C build/wf-utils
+
+      - name: Build Wayfire
+        run: |
+          set -eux
+          meson setup build/wayfire . \
+            --prefix=/usr --buildtype=release -Dstrip=true -Db_pch=true \
+            -Dtests=disabled \
+            -Duse_system_wlroots=enabled \
+            -Duse_system_wfconfig=enabled \
+            -Dxwayland=enabled \
+            -Dbuild_locales=enabled \
+            -Dprint_trace=false
+          ninja -C build/wayfire
+          DESTDIR="$PWD/stage" meson install -C build/wayfire
+
+      - name: Create .deb
+        run: |
+          set -eux
+          BASE_VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || true)
+          if [ -z "$BASE_VERSION" ]; then
+            BASE_VERSION=$(git ls-remote --tags --refs https://github.com/WayfireWM/wayfire.git 'v*' 2>/dev/null | sed 's|.*/v||' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true)
+          fi
+          BASE_VERSION=${BASE_VERSION:-0.11.0}
+          if EXACT_TAG=$(git describe --tags --exact-match 2>/dev/null); then
+            VERSION=${EXACT_TAG#v}
+          else
+            GIT_DATE=$(git log -1 --format=%cd --date=format:%Y%m%d)
+            GIT_HASH=$(git rev-parse --short=8 HEAD)
+            VERSION="${BASE_VERSION}+git${GIT_DATE}.${GIT_HASH}"
+          fi
+          ARCH=$(dpkg --print-architecture)
+
+          # Runtime package: drop headers and pkg-config files.
+          rm -rf stage/usr/include
+          find stage/usr -type d -name pkgconfig -prune -exec rm -rf {} +
+          find stage/usr -type f \( -name '*.a' -o -name '*.la' \) -delete
+          find stage/usr/share/man -type f -name '*.1' -exec gzip -9n {} +
+          install -Dm644 LICENSE stage/usr/share/doc/wayfire/copyright
+          install -Dm644 subprojects/wlroots/LICENSE stage/usr/share/doc/wayfire/LICENSE.wlroots
+          install -Dm644 subprojects/wf-config/LICENSE stage/usr/share/doc/wayfire/LICENSE.wf-config
+          install -Dm644 subprojects/wf-utils/LICENSE stage/usr/share/doc/wayfire/LICENSE.wf-utils
+
+          mkdir -p stage/DEBIAN dist
+          cat > stage/DEBIAN/control <<EOF
+          Package: wayfire
+          Version: ${VERSION}-1
+          Section: x11
+          Priority: optional
+          Architecture: ${ARCH}
+          Maintainer: WenYin-Community <ruojiner@hotmail.com>
+          Homepage: https://wayfire.org
+          Depends: libc6, libstdc++6, libgcc-s1, libwayland-server0, libwayland-client0, libwayland-cursor0, libwayland-egl1, libcairo2, libpango-1.0-0, libpangocairo-1.0-0, libfreetype6, libdrm2, libevdev2, libgl1, libgles2, libegl1, libgbm1, libinput10, libjpeg62-turbo, libpng16-16t64, libxkbcommon0, libxml2-16, libpixman-1-0, libudev1, libseat1, libdisplay-info3, libxcb1, libxcb-composite0, libxcb-ewmh2, libxcb-icccm4, libxcb-render0, libxcb-res0, libxcb-xfixes0, libxcb-xinput0, libxcb-errors0, libx11-xcb1, libliftoff0, liblcms2-2, libgomp1, libglib2.0-0t64, libyyjson0, python3, hwdata
+          Recommends: xwayland
+          Description: 3D Wayland compositor
+           Wayfire is a 3D Wayland compositor based on wlroots. It aims to be
+           customizable, extendable and lightweight without sacrificing appearance.
+          EOF
+
+          dpkg-deb --build --root-owner-group stage "dist/wayfire_${VERSION}-1_${ARCH}.deb"
+          dpkg-deb --info "dist/wayfire_${VERSION}-1_${ARCH}.deb"
+
+      - name: Upload .deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: wayfire-deb
+          path: dist/*.deb
+          if-no-files-found: error
+
+  rpm:
+    name: Fedora package
+    runs-on: ubuntu-latest
+    container: fedora:45
+    steps:
+      - name: Install build dependencies
+        run: |
+          set -eux
+          dnf install -y --setopt=install_weak_deps=False \
+            gcc gcc-c++ meson ninja-build pkgconf-pkg-config git ca-certificates \
+            wayland-devel wayland-protocols-devel \
+            cairo-devel pango-devel freetype-devel glm-devel \
+            libdrm-devel libevdev-devel \
+            mesa-libGL-devel mesa-libEGL-devel mesa-libgbm-devel libglvnd-devel \
+            libinput-devel libjpeg-turbo-devel libpng-devel libxkbcommon-devel \
+            libxml2-devel pixman-devel systemd-devel libseat-devel \
+            libdisplay-info-devel hwdata-devel \
+            libxcb-devel xcb-util-wm-devel xcb-util-errors-devel libX11-devel \
+            xorg-x11-server-Xwayland-devel \
+            libliftoff-devel lcms2-devel yyjson-devel \
+            gettext rpm-build
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Initialize submodules
+        run: |
+          set -eux
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git submodule sync --recursive
+          git submodule update --init --force \
+            subprojects/wlroots subprojects/wf-config subprojects/wf-utils \
+            subprojects/wf-touch subprojects/wf-json
+
+      - name: Build bundled dependencies
+        run: |
+          set -eux
+          meson setup build/wlroots subprojects/wlroots \
+            --prefix=/usr --buildtype=release -Dstrip=true \
+            -Dwerror=false -Dexamples=false -Dxwayland=enabled
+          ninja -C build/wlroots
+          meson install -C build/wlroots
+          DESTDIR="$PWD/stage" meson install -C build/wlroots
+
+          meson setup build/wf-config subprojects/wf-config \
+            --prefix=/usr --buildtype=release -Dstrip=true -Dtests=disabled
+          ninja -C build/wf-config
+          meson install -C build/wf-config
+          DESTDIR="$PWD/stage" meson install -C build/wf-config
+
+          meson setup build/wf-utils subprojects/wf-utils \
+            --prefix=/usr --buildtype=release -Dstrip=true
+          ninja -C build/wf-utils
+          meson install -C build/wf-utils
+          DESTDIR="$PWD/stage" meson install -C build/wf-utils
+
+      - name: Build Wayfire
+        run: |
+          set -eux
+          meson setup build/wayfire . \
+            --prefix=/usr --buildtype=release -Dstrip=true -Db_pch=true \
+            -Dtests=disabled \
+            -Duse_system_wlroots=enabled \
+            -Duse_system_wfconfig=enabled \
+            -Dxwayland=enabled \
+            -Dbuild_locales=enabled \
+            -Dprint_trace=false
+          ninja -C build/wayfire
+          DESTDIR="$PWD/stage" meson install -C build/wayfire
+
+      - name: Create .rpm
+        run: |
+          set -eux
+          BASE_VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || true)
+          if [ -z "$BASE_VERSION" ]; then
+            BASE_VERSION=$(git ls-remote --tags --refs https://github.com/WayfireWM/wayfire.git 'v*' 2>/dev/null | sed 's|.*/v||' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true)
+          fi
+          BASE_VERSION=${BASE_VERSION:-0.11.0}
+          if EXACT_TAG=$(git describe --tags --exact-match 2>/dev/null); then
+            VERSION=${EXACT_TAG#v}
+          else
+            GIT_DATE=$(git log -1 --format=%cd --date=format:%Y%m%d)
+            GIT_HASH=$(git rev-parse --short=8 HEAD)
+            VERSION="${BASE_VERSION}+git${GIT_DATE}.${GIT_HASH}"
+          fi
+          ARCH=$(uname -m)
+
+          # Runtime package: drop headers and pkg-config files.
+          rm -rf stage/usr/include
+          find stage/usr -type d -name pkgconfig -prune -exec rm -rf {} +
+          find stage/usr -type f \( -name '*.a' -o -name '*.la' \) -delete
+          find stage/usr/share/man -type f -name '*.1' -exec gzip -9n {} +
+          install -Dm644 LICENSE stage/usr/share/doc/wayfire/copyright
+          install -Dm644 subprojects/wlroots/LICENSE stage/usr/share/doc/wayfire/LICENSE.wlroots
+          install -Dm644 subprojects/wf-config/LICENSE stage/usr/share/doc/wayfire/LICENSE.wf-config
+          install -Dm644 subprojects/wf-utils/LICENSE stage/usr/share/doc/wayfire/LICENSE.wf-utils
+
+          mkdir -p rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          find stage -mindepth 1 \( -type f -o -type l \) -printf '/%P\n' | sort > rpmbuild/files.list
+          cat > rpmbuild/SPECS/wayfire.spec <<EOF
+          Name:           wayfire
+          Version:        ${VERSION}
+          Release:        1%{?dist}
+          Summary:        3D Wayland compositor
+          License:        MIT
+          URL:            https://wayfire.org
+          BuildArch:      ${ARCH}
+          Requires:       hwdata
+          Requires:       python3
+          Recommends:     xorg-x11-server-Xwayland
+
+          %description
+          Wayfire is a 3D Wayland compositor based on wlroots. It aims to be
+          customizable, extendable and lightweight without sacrificing appearance.
+
+          %prep
+          %build
+
+          %install
+          cp -a %{_stage}/usr %{buildroot}/
+
+          %files -f %{_filelist}
+
+          %changelog
+          * Wed Nov 11 2026 WenYin-Community <ruojiner@hotmail.com> - ${VERSION}-1
+          - Initial package
+          EOF
+
+          rpmbuild -bb \
+            --define "_stage $PWD/stage" \
+            --define "_filelist $PWD/rpmbuild/files.list" \
+            --define "_topdir $PWD/rpmbuild" \
+            rpmbuild/SPECS/wayfire.spec
+          rpm -qip rpmbuild/RPMS/*/wayfire-*.rpm
+
+      - name: Upload .rpm
+        uses: actions/upload-artifact@v4
+        with:
+          name: wayfire-rpm
+          path: rpmbuild/RPMS/*/*.rpm
+          if-no-files-found: error
