@@ -303,15 +303,14 @@ jobs:
         run: |
           set -eux
           if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            EXTRA=""
-            case "$GITHUB_REF_NAME" in
-              *+git*) EXTRA="--prerelease" ;;
-            esac
             gh release create "$GITHUB_REF_NAME" \
               --repo "$GITHUB_REPOSITORY" \
               --title "Wayfire $GITHUB_REF_NAME" \
-              --generate-notes $EXTRA
+              --generate-notes \
+              --latest
           fi
+          gh release edit "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" --prerelease=false
           test -n "$(find dist -type f \( -name '*.deb' -o -name '*.rpm' \) -print -quit)"
           find dist -type f \( -name '*.deb' -o -name '*.rpm' \) -print0 \
             | xargs -0 gh release upload "$GITHUB_REF_NAME" \
