@@ -282,3 +282,38 @@ jobs:
           name: wayfire-rpm
           path: rpmbuild/RPMS/*/*.rpm
           if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: [deb, rpm]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+          if-no-files-found: error
+
+      - name: Upload packages to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eux
+          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            EXTRA=""
+            case "$GITHUB_REF_NAME" in
+              *+git*) EXTRA="--prerelease" ;;
+            esac
+            gh release create "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Wayfire $GITHUB_REF_NAME" \
+              --generate-notes $EXTRA
+          fi
+          gh release upload "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" --clobber
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --json url,assets --jq '{url, assets: [.assets[].name]}'
