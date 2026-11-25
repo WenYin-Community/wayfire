@@ -90,6 +90,19 @@ They are relevant for cases when the system doesn't have a version of wlroots in
 
 ## Installation
 
+### Prebuilt packages
+
+Prebuilt Debian and Fedora packages are available on the
+[GitHub Releases](https://github.com/WenYin-Community/wayfire/releases) page:
+
+```sh
+# Debian/Ubuntu
+sudo apt install ./wayfire_<version>-1_amd64.deb
+
+# Fedora
+sudo dnf install ./wayfire-<version>-1.fc45.x86_64.rpm
+```
+
 The easiest way to install Wayfire, wf-shell and WCM to get a functional desktop is to use the [install scripts](https://github.com/WayfireWM/wf-install).
 
 Alternatively, you can build from source:
